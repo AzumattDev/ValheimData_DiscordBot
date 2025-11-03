@@ -1,5 +1,6 @@
 ﻿using Discord;
 using Discord.Interactions;
+using Discord.WebSocket;
 
 namespace ValheimData_DiscordBot;
 
@@ -35,6 +36,100 @@ public abstract class AppModuleBase(Chunking chunk) : InteractionModuleBase<Sock
 
 public sealed class ValDocsSlash(Chunking chunk, JotunnCache cache) : AppModuleBase(chunk)
 {
+    [SlashCommand("diag_here", "Diagnose why slash commands may be hidden or failing in this channel.")]
+    [EnabledInDm(false)]
+    [DefaultMemberPermissions(GuildPermission.Administrator)]
+    public async Task DiagHere(
+        [Summary("user", "User to simulate (optional)")]
+        IUser? who = null)
+    {
+        await DeferAsync(ephemeral: true);
+
+        if (Context.Guild is null || Context.Channel is not SocketGuildChannel ch)
+        {
+            await FollowupAsync("Run this in a server text channel (not DM).", ephemeral: true);
+            return;
+        }
+
+        var guild = Context.Guild;
+        var me = await ((IGuild)guild).GetCurrentUserAsync();
+
+        // Pick target = provided user or the invoker
+        SocketGuildUser? target =
+            who != null
+                ? guild.GetUser(who.Id)
+                : Context.User as SocketGuildUser;
+
+        if (target is null)
+        {
+            await FollowupAsync("That user isn’t in this server.", ephemeral: true);
+            return;
+        }
+
+        // Effective perms in this channel
+        var userPerms = target.GetPermissions(ch);
+        var botPerms = me.GetPermissions(ch);
+
+        var lines = new List<string>();
+        void Line(bool ok, string text) => lines.Add($"{(ok ? "✅" : "❌")} {text}");
+
+        // Member-side gates (visibility/ability to invoke)
+        Line(userPerms.UseApplicationCommands, $"**{target.DisplayName}** has **Use Application Commands** in this channel.");
+
+        // Bot-side gates (ability to respond)
+        Line(botPerms.ViewChannel, "Bot can **View Channel**.");
+        Line(botPerms.SendMessages, "Bot can **Send Messages**.");
+        Line(botPerms.EmbedLinks, "Bot can **Embed Links**.");
+        Line(botPerms.AttachFiles, "Bot can **Attach Files**.");
+
+        // Admin bypass note (for the simulated target)
+        if (target.GuildPermissions.Administrator)
+            lines.Add("ℹ️ Target is **Administrator** and bypasses channel denies. Regular members won’t.");
+
+        // Surface channel overwrites explicitly denying Use Application Commands
+        var denyTargets = new List<string>();
+        try
+        {
+            foreach (var ow in ch.PermissionOverwrites)
+            {
+                var p = ow.Permissions;
+                if (p.UseApplicationCommands == PermValue.Deny)
+                {
+                    bool applies = ow.TargetType switch
+                    {
+                        PermissionTarget.User => ow.TargetId == target.Id,
+                        PermissionTarget.Role => target.Roles.Any(r => r.Id == ow.TargetId),
+                        _ => false
+                    };
+                    if (!applies) continue;
+
+                    string name = ow.TargetType == PermissionTarget.Role
+                        ? (guild.GetRole(ow.TargetId)?.Name ?? $"Role {ow.TargetId}")
+                        : (guild.GetUser(ow.TargetId)?.Username ?? $"User {ow.TargetId}");
+                    denyTargets.Add(name);
+                }
+            }
+        }
+        catch
+        {
+            /* older libs may not expose UseApplicationCommands on overwrites */
+        }
+
+        if (denyTargets.Count > 0)
+            lines.Add("⚠️ **Explicit denies for target:** " + string.Join(", ", denyTargets.Select(n => $"`{n}`")));
+
+        // Integration permissions hint (server-wide command restrictions)
+        lines.Add("ℹ️ Also check **Server Settings → Integrations → Your App → Command Permissions**. If restricted, only allowed roles/users can run slash commands.");
+
+        var eb = new EmbedBuilder()
+            .WithTitle($"Diagnostics for #{ch.Name} — {(who != null ? target.DisplayName : "you")}")
+            .WithDescription(string.Join("\n", lines))
+            .WithColor(lines.Any(l => l.StartsWith("❌")) || denyTargets.Count > 0 ? Color.DarkRed : Color.DarkGreen);
+
+        await FollowupAsync(embed: eb.Build(), ephemeral: true);
+    }
+
+
     [SlashCommand("val_item", "Search Valheim items (Jötunn data).")]
     public async Task ValItem(
         [Autocomplete(typeof(ItemAutocomplete))] [Summary("query", description: "Text to search (matches name, token, asset ID, or type).")]
