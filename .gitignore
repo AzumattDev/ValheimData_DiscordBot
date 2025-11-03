@@ -1,0 +1,23 @@
+﻿# File-based project format
+*.iws
+
+# IntelliJ
+out/
+
+#appsettings
+appsettings.json
+index.php
+Request.cs
+Request.proto
+protoc.exe
+SetUpInstructionsAndQuickCommands.txt
+
+# Project specifics
+bin/
+obj/
+/packages/
+riderModule.iml
+/_ReSharper.Caches/
+.idea/
+.vs/
+ValheimData_DiscordBot.sln.DotSettings.user
